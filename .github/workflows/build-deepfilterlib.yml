@@ -3,25 +3,65 @@ name: build-deepfilterlib
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+env:
+  VERSION: "0.5.6"
+
 jobs:
   build:
-    runs-on: ubuntu-latest # use ubuntu-24.04-arm for aarch64
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Download sdist
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Ensure Rust toolchain
         run: |
-          pip download deepfilterlib==0.5.6 --no-binary :all: --no-deps -d dl
-          tar xzf dl/*.tar.gz -C dl
-      - uses: PyO3/maturin-action@v1
+          if ! command -v cargo >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          cargo --version
+
+      - name: Download sdist straight from PyPI
+        run: |
+          mkdir -p src
+          URL=$(curl -s https://pypi.org/pypi/deepfilterlib/${VERSION}/json \
+            | python -c "import sys,json; d=json.load(sys.stdin); print(next(u['url'] for u in d['urls'] if u['packagetype']=='sdist'))")
+          echo "Downloading $URL"
+          curl -L "$URL" -o src/deepfilterlib.tar.gz
+          ls -l src
+
+      - name: Build wheel
+        run: uv build --wheel --python 3.13 --out-dir dist src/deepfilterlib.tar.gz
+
+      - name: Show result
+        run: ls -l dist
+
+      - uses: actions/upload-artifact@v4
         with:
-          working-directory: dl/deepfilterlib-0.5.6
-          manylinux: auto
-          args: --release --out ../../dist -i python3.13
+          name: wheel-${{ matrix.os }}
+          path: dist/*.whl
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: deepfilterlib-0.5.6
+          tag_name: deepfilterlib-${{ env.VERSION }}
+          name: deepfilterlib ${{ env.VERSION }} (cp313)
           files: dist/*.whl
